@@ -1,0 +1,1 @@
+from insturct_following import instructions_registry

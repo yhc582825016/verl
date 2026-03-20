@@ -1,0 +1,8 @@
+interaction:
+  - name: "gym"
+    class_name: "verl.interactions.gym_interaction.GymInteraction"
+    config:
+      default_env: "nemo_gym_env"
+      default_context_manager: "dummyContextManager"
+      use_env_reset_messages: false
+

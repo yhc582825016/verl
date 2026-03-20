@@ -36,3 +36,23 @@ bash examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_multiturn_4xgpu.sh
 - The rollout supports multi-turn conversations with tool-calling capabilities.
 - Current tools are used for GSM8K answer evaluation.
 - Future versions may extend to search and code interpreter tools.
+
+## Gym Reward Environment
+
+verl now supports gym-style reward environments through interaction config:
+
+- Use interaction class `verl.interactions.gym_interaction.GymInteraction`
+- Use env name `nemo_gym_env` from `verl.interactions.gym_env`
+- Example config: `examples/sglang_multiturn/config/interaction_config/gym_interaction_config.yaml`
+
+For each training sample, set `extra_info.interaction_kwargs` with at least:
+
+- `name: "gym"`
+- `env_config`: for example:
+  - `name: "nemo_gym_env"`
+  - `verify_url: "http://127.0.0.1:18001/verify"`
+  - `prompt_key`, `reward_key`, `done_on_verify` (optional)
+
+When `GymInteraction` returns per-turn reward, verl writes it into `rm_scores`
+directly, so PPO/GRPO can train with gym-provided reward without a custom
+reward function.

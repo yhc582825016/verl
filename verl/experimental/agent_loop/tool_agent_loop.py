@@ -136,6 +136,7 @@ class ToolAgentLoop(AgentLoopBase):
         # Initialize interaction if needed
         interaction = None
         interaction_kwargs = {}
+        interaction_instance_id: str | None = None
         if self.interaction_config_file:
             interaction_kwargs = kwargs["extra_info"]["interaction_kwargs"]
             if "name" not in interaction_kwargs:
@@ -147,7 +148,14 @@ class ToolAgentLoop(AgentLoopBase):
                     f"{list(self.interaction_map.keys())}"
                 )
             interaction = self.interaction_map[interaction_name]
-            await interaction.start_interaction(request_id, **interaction_kwargs)
+            start_kwargs = dict(interaction_kwargs)
+            start_kwargs.setdefault("initial_messages", messages)
+            start_kwargs.setdefault("sample", kwargs)
+            interaction_instance_id = await interaction.start_interaction(request_id, **start_kwargs)
+            if hasattr(interaction, "get_initial_messages"):
+                init_messages = await interaction.get_initial_messages(interaction_instance_id)
+                if init_messages:
+                    messages = list(init_messages)
         # Create AgentData instance to encapsulate all state
         agent_data = AgentData(
             messages=messages,
@@ -174,6 +182,9 @@ class ToolAgentLoop(AgentLoopBase):
             else:
                 logger.error(f"Invalid state: {state}")
                 state = AgentState.TERMINATED
+
+        if interaction is not None and interaction_instance_id is not None:
+            await interaction.finalize_interaction(interaction_instance_id)
 
         # Finalize output
         response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
@@ -392,6 +403,11 @@ class ToolAgentLoop(AgentLoopBase):
             agent_data.request_id, agent_data.messages, **agent_data.interaction_kwargs
         )
         agent_data.user_turns += 1
+
+        if isinstance(metrics, dict):
+            managed_messages = metrics.pop("managed_messages", None)
+            if managed_messages is not None:
+                agent_data.messages = list(managed_messages)
 
         add_messages: list[dict[str, Any]] = [{"role": "user", "content": interaction_responses}]
         agent_data.messages.extend(add_messages)
