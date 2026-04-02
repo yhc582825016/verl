@@ -928,9 +928,19 @@ class DataProto:
             batch_lst.append(batch.batch)
         new_batch = torch.cat(batch_lst, dim=0) if batch_lst[0] is not None else None
 
-        non_tensor_batch = list_of_dict_to_dict_of_list(list_of_dict=[d.non_tensor_batch for d in data])
-        for key, val in non_tensor_batch.items():
-            non_tensor_batch[key] = np.concatenate(val, axis=0)
+        # Some workers may omit optional non-tensor keys (for example debug fields that
+        # only exist on certain termination paths). Fill missing chunk-local values with
+        # `None` so concatenation remains aligned with the tensor batch.
+        non_tensor_batch = {}
+        all_non_tensor_keys = set().union(*(d.non_tensor_batch.keys() for d in data))
+        for key in all_non_tensor_keys:
+            values = []
+            for d in data:
+                if key in d.non_tensor_batch:
+                    values.append(d.non_tensor_batch[key])
+                else:
+                    values.append(np.full((len(d),), None, dtype=object))
+            non_tensor_batch[key] = np.concatenate(values, axis=0)
 
         # Merge meta_info with special handling for metrics
         merged_meta_info = {}

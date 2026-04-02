@@ -263,15 +263,31 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Check termination conditions
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "max_response_length"
             return AgentState.TERMINATED
         if self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "max_assistant_turns"
             return AgentState.TERMINATED
         if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "max_user_turns"
             return AgentState.TERMINATED
 
         # Extract tool calls
         tools = [tool.tool_schema for tool in self.tools.values()]
+        decoded_response = await self.loop.run_in_executor(
+            None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=False)
+        )
         _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
+        agent_data.extra_fields["tool_debug_decoded_response"] = decoded_response
+        agent_data.extra_fields["tool_debug_decoded_response_length"] = len(decoded_response)
+        agent_data.extra_fields["tool_debug_parsed_tool_call_count"] = len(agent_data.tool_calls)
+        agent_data.extra_fields["tool_debug_parsed_tool_calls"] = [tool_call.model_dump() for tool_call in agent_data.tool_calls]
+        agent_data.extra_fields["tool_debug_has_tool_call_markup"] = "<tool_call>" in decoded_response
+        agent_data.extra_fields["tool_debug_assistant_turns"] = agent_data.assistant_turns
+        agent_data.extra_fields["tool_debug_user_turns"] = agent_data.user_turns
+        agent_data.extra_fields["tool_debug_response_length_limit"] = self.response_length
+        agent_data.extra_fields["tool_debug_max_assistant_turns_limit"] = self.max_assistant_turns
+        agent_data.extra_fields["tool_debug_max_user_turns_limit"] = self.max_user_turns
 
         # Handle interaction if needed
         if self.interaction_config_file:
@@ -283,10 +299,20 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Determine next state
         if agent_data.tool_calls:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "tool_call_detected"
             return AgentState.PROCESSING_TOOLS
+        elif agent_data.extra_fields["tool_debug_has_tool_call_markup"]:
+            error_message = (
+                "Error when parsing tool call: tool call markup was detected, "
+                "but the function name or arguments could not be parsed. "
+                "Please emit a valid tool call and arguments."
+            )
+            return await self._handle_tool_parse_failure(agent_data, error_message)
         elif self.interaction_config_file:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "interaction_required"
             return AgentState.INTERACTING
         else:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "no_tool_call_detected"
             return AgentState.TERMINATED
 
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
@@ -374,6 +400,7 @@ class ToolAgentLoop(AgentLoopBase):
             )
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "tool_response_would_exceed_max_response_length"
             return AgentState.TERMINATED
         # Update prompt_ids and response_mask
 
@@ -390,6 +417,36 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+        return AgentState.GENERATING
+
+    async def _handle_tool_parse_failure(self, agent_data: AgentData, error_message: str) -> AgentState:
+        """Append parse errors as tool observations so the model can recover in the next turn."""
+        add_messages = [{"role": "tool", "content": error_message}]
+        agent_data.messages.extend(add_messages)
+
+        if self.tool_parser_name == "gpt-oss":
+            tool_response_text = build_gpt_oss_tool_response_text(add_messages, ["tool_parse_error"])
+            response_ids = await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False)
+            )
+        else:
+            response_ids = await self.apply_chat_template(
+                add_messages,
+                images=None,
+                videos=None,
+                remove_system_prompt=True,
+            )
+
+        if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "tool_parse_failure_would_exceed_max_response_length"
+            return AgentState.TERMINATED
+
+        agent_data.prompt_ids += response_ids
+        agent_data.response_mask += [0] * len(response_ids)
+        if agent_data.response_logprobs:
+            agent_data.response_logprobs += [0.0] * len(response_ids)
+        agent_data.user_turns += 1
+        agent_data.extra_fields["tool_debug_termination_reason"] = "tool_parse_failure_feedback"
         return AgentState.GENERATING
 
     async def _handle_interacting_state(self, agent_data: AgentData) -> AgentState:
@@ -430,6 +487,7 @@ class ToolAgentLoop(AgentLoopBase):
         # double check prompt
         # Check termination condition
         if should_terminate_sequence:
+            agent_data.extra_fields["tool_debug_termination_reason"] = "interaction_terminated_sequence"
             return AgentState.TERMINATED
         else:
             return AgentState.GENERATING

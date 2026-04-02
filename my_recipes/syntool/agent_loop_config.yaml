@@ -1,0 +1,2 @@
+- name: syntool_agent
+  _target_: my_recipes.syntool.agent_loop.SyntoolToolAgentLoop

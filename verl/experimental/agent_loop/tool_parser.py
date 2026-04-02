@@ -191,6 +191,7 @@ class Qwen3XMLToolParser(ToolParser):
         self.tool_call_regex = regex.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", regex.DOTALL)
         self.tool_call_function_regex = regex.compile(r"<function=(.*?)</function>|<function=(.*)$", regex.DOTALL)
         self.tool_call_parameter_regex = regex.compile(r"<parameter=(.*?)</parameter>|<parameter=(.*?)$", regex.DOTALL)
+        self.hermes_tool_call_regex = regex.compile(r"<tool_call>(.*?)</tool_call>", regex.DOTALL)
 
     def _parse_xml_function_call(
         self, function_call_str: str, tools: Optional[list[OpenAIFunctionToolSchema]]
@@ -312,6 +313,29 @@ class Qwen3XMLToolParser(ToolParser):
         function_calls = [match[0] if match[0] else match[1] for match in raw_function_calls]
         return function_calls
 
+    def _extract_hermes_tool_calls(self, model_output: str) -> tuple[str, list[FunctionCall]]:
+        matches = self.hermes_tool_call_regex.findall(model_output)
+        if not matches:
+            return model_output, []
+
+        function_calls = []
+        for match in matches:
+            raw_call = match.strip()
+            if raw_call.startswith("<function="):
+                continue
+            try:
+                function_call = json.loads(raw_call)
+                name, arguments = function_call["name"], function_call["arguments"]
+                function_calls.append(FunctionCall(name=name, arguments=json.dumps(arguments, ensure_ascii=False)))
+            except Exception as e:
+                logger.error(f"Failed to decode hermes-style tool call in qwen3_coder parser: {e}")
+
+        if not function_calls:
+            return model_output, []
+
+        content = self.hermes_tool_call_regex.sub("", model_output)
+        return content, function_calls
+
     @rollout_trace_op
     async def extract_tool_calls(
         self, responses_ids: list[int], tools: list[OpenAIFunctionToolSchema] = None
@@ -324,7 +348,7 @@ class Qwen3XMLToolParser(ToolParser):
         try:
             function_calls = self._get_function_calls(text)
             if len(function_calls) == 0:
-                return text, []
+                return self._extract_hermes_tool_calls(text)
 
             tool_calls = [
                 self._parse_xml_function_call(function_call_str, tools) for function_call_str in function_calls

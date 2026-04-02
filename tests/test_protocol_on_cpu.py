@@ -444,6 +444,32 @@ def test_dataproto_pad_unpad():
     assert unpadd_data.meta_info == {"info": "test_info"}
 
 
+def test_dataproto_concat_with_missing_non_tensor_keys():
+    data1 = DataProto.from_dict(
+        tensors={"obs": torch.tensor([[1, 2], [3, 4]])},
+        non_tensors={
+            "labels": ["a", "b"],
+            "tool_debug_max_assistant_turns_limit": [32, 32],
+        },
+        meta_info={"info": "test_info"},
+    )
+    data2 = DataProto.from_dict(
+        tensors={"obs": torch.tensor([[5, 6], [7, 8]])},
+        non_tensors={"labels": ["c", "d"]},
+        meta_info={"info": "test_info"},
+    )
+
+    merged = DataProto.concat([data1, data2])
+
+    torch.testing.assert_close(merged.batch["obs"], torch.tensor([[1, 2], [3, 4], [5, 6], [7, 8]]))
+    assert (merged.non_tensor_batch["labels"] == np.array(["a", "b", "c", "d"], dtype=object)).all()
+    assert (
+        merged.non_tensor_batch["tool_debug_max_assistant_turns_limit"]
+        == np.array([32, 32, None, None], dtype=object)
+    ).all()
+    assert merged.meta_info == {"info": "test_info"}
+
+
 def test_dataproto_fold_unfold():
     from verl.protocol import DataProto, fold_batch_dim, unfold_batch_dim
 
